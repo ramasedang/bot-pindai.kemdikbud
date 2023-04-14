@@ -3,6 +3,7 @@ import https from "https";
 import fs from "fs";
 import cheerio from "cheerio";
 import mqtt from "mqtt";
+import cron from "node-cron";
 
 async function SendWa(to, subject, text) {
   var topic = "wa-send-up3";
@@ -149,7 +150,6 @@ const compareData = async (tableData, nama_ptn) => {
   return [];
 };
 
-
 const formatDataText = (data) => {
   let text = `*${data.nama_ptn}*\n\n`;
 
@@ -203,7 +203,23 @@ const main = async () => {
   // console.log(changesText);
   if (changesText) {
     SendWa(to, subject, changesText);
+  } else {
+    SendWa(to, subject, "Tidak ada perubahan");
   }
 };
 
-main();
+const startCron = () => {
+  cron.schedule("0 6 * * *", async () => {
+    // console.log('Running a task every day at 6:00 AM');
+    await main();
+  });
+
+  // every 1 minute
+  // cron.schedule("* * * * *", async () => {
+  //   await main();
+  // });
+
+
+};
+
+startCron();
