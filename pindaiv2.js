@@ -4,6 +4,7 @@ import fs from "fs";
 import cheerio from "cheerio";
 import mqtt from "mqtt";
 import cron from "node-cron";
+import puppeteer from "puppeteer";
 
 async function SendWa(to, subject, text) {
   var topic = "wa-send-up3";
@@ -20,6 +21,35 @@ async function SendWa(to, subject, text) {
       mqclient.end();
     }
   );
+}
+
+async function sendWaV2(to, message, media) {
+  var topic = "wa-send-up3-v2";
+  var mqclient = mqtt.connect("tcp://mqtt.cybtr.com", {
+    username: "up3",
+    password: "up3d1e21edQ",
+  });
+
+  let recipient = to;
+
+  // Tambahkan "@c.us" jika nomor diawali dengan "62" dan panjangnya 12 digit
+  if (recipient.startsWith("62") && recipient.length === 12) {
+    recipient += "@c.us";
+  }
+  // Tambahkan "@g.us" jika panjang nomor lebih dari 12 digit
+  else if (recipient.length > 12) {
+    recipient += "@g.us";
+  }
+
+  let payload = { phone_number: recipient, message: message };
+  const mimeType = "image/png";
+
+  payload.media = { mimetype: mimeType, data: media };
+
+  mqclient.publish(topic, JSON.stringify(payload), { qos: 2 }, function (err) {
+    console.log("WA media sent");
+    mqclient.end();
+  });
 }
 
 const getHtml = async (url) => {
@@ -140,7 +170,8 @@ const compareData = async (tableData, nama_ptn) => {
   });
 
   changes.forEach((value, key) => {
-    changeMessage += `Keterangan: ${key}\n${value}\n`;
+    //    changeMessage += `Keterangan: ${key}\n${value}\n`;
+    changeMessage += `${key}\n${value}\n`;
   });
 
   if (changeMessage) {
@@ -157,7 +188,8 @@ const formatDataText = (data) => {
     if (index === 0) return; // Skip header
 
     const keterangan = row.keterangan;
-    text += `Keterangan: ${keterangan}\n`;
+    //    text += `Keterangan: ${keterangan}\n`;
+    text += `${keterangan}\n`;
 
     Object.keys(row).forEach((key) => {
       if (key !== "keterangan") {
@@ -172,54 +204,99 @@ const formatDataText = (data) => {
 };
 
 const main = async () => {
-  let allChanges = [];
-  const html = await getHtml("https://pindai.kemdikbud.go.id/web/iku2021");
-  const links = await getPTNBH(html);
-  for (let i = 0; i < links.length; i++) {
-    const html_detail = await getHtml(links[i]);
-    let data = await parsingTable(links[i], html_detail);
+  try {
+    let allChanges = [];
+    const html = await getHtml("https://pindai.kemdikbud.go.id/web/iku2021");
+    const links = await getPTNBH(html);
+    for (const link of links) {
+      const html_detail = await getHtml(link);
+      let data = await parsingTable(link, html_detail);
 
-    const text = formatDataText(data);
+      const text = formatDataText(data);
+
+      // matikan spy tidak terlalu byk WA
+      const to = "120363102048157763";
+      const subject = "Data IKU";
+      //      SendWa(to, subject, text);
+      const changes = await compareData(data.tableData, data.nama_ptn);
+      allChanges = allChanges.concat(changes);
+      // simpan data
+      fs.writeFileSync(
+        "dataIKU/" + data.nama_ptn + ".json",
+        JSON.stringify(data)
+      );
+    }
+
+    // Gabungkan semua pesan perubahan
+    const changesText = allChanges.join("\n");
 
     // Kirim pesan melalui WhatsApp
-    const to = "089523804019";
-    const subject = "Data IKU";
-    SendWa(to, subject, text);
-    const changes = await compareData(data.tableData, data.nama_ptn);
-    allChanges = allChanges.concat(changes);
-    // simpan data
-    fs.writeFileSync(
-      "dataIKU/" + data.nama_ptn + ".json",
-      JSON.stringify(data)
-    );
-  }
-
-  // Gabungkan semua pesan perubahan
-  const changesText = allChanges.join("\n");
-
-  // Kirim pesan melalui WhatsApp
-  const to = "089523804019";
-  const subject = "Perubahan Data IKU";
-  // console.log(changesText);
-  if (changesText) {
-    SendWa(to, subject, changesText);
-  } else {
-    SendWa(to, subject, "Tidak ada perubahan");
+    const to = "6281360031356-1619757526";
+    const subject = "";
+    if (changesText) {
+      SendWa(to, subject, changesText);
+    } else {
+      SendWa(to, subject, "Tidak ada perubahan");
+    }
+    // Backup data
+    await backupData();
+  } catch (error) {
+    console.error("Error in main function:", error);
   }
 };
 
+const backupData = async () => {
+  // Membuat folder backup dengan format tanggal hari ini (misal: 2023-04-15)
+  const today = new Date().toISOString().slice(0, 10);
+  const backupFolder = `IKU_BACKUP/${today}`;
+  if (!fs.existsSync(backupFolder)) {
+    fs.mkdirSync(backupFolder, { recursive: true });
+  }
+
+  // Backup dataIKU ke folder backup
+  fs.readdirSync("dataIKU").forEach((file) => {
+    fs.copyFileSync(`dataIKU/${file}`, `${backupFolder}/${file}`);
+  });
+};
+
+const getImage = async () => {
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: [
+      "--disable-setuid-sandbox",
+      "--no-sandbox",
+      "--disable-gpu",
+      "--no-first-run",
+    ],
+  });
+  const page = await browser.newPage();
+
+  await page.setViewport({
+    width: 1220,
+    height: 1080,
+  });
+
+  await page.goto("http://10.15.43.68/");
+  const element = await page.$("#table_wrapper");
+  let base64 = await element.screenshot({ encoding: "base64" });
+  console.log(base64);
+  await browser.close();
+
+  await sendWaV2("6281360031356-1619757526", "Stats Harian IKU", base64);
+};
+
 const startCron = () => {
+//  cron.schedule("0 6 * * *", async () => {
   cron.schedule("0 6 * * *", async () => {
     // console.log('Running a task every day at 6:00 AM');
     await main();
+    await getImage();
   });
 
-  // every 1 minute
-  // cron.schedule("* * * * *", async () => {
-  //   await main();
-  // });
-
-
+  //   // every 1 minute
+  //   // cron.schedule("* * * * *", async () => {
+  //   //   await main();
+  //   // });
 };
 
 startCron();
